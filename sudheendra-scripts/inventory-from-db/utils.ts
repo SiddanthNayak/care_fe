@@ -13,7 +13,7 @@ import { PaginatedResponse } from "@/Utils/request/types";
 import dotenv from "dotenv";
 import { createSlug, normalizeTitle, request } from "sudheendra-scripts/utils";
 
-import { MonetaryComponentType } from "@/types/base/monetaryComponent/monetaryComponent";
+import type { MonetaryComponentType } from "@/types/base/monetaryComponent/monetaryComponent";
 import {
   DeliveryOrderCreate,
   DeliveryOrderRetrieve,
@@ -161,9 +161,10 @@ export const getChargeItemDefinitionsToImport =
         title: item.ITEM_NAME,
         slug_value: getChargeItemDefinitionSlug(item),
         category: `f-${FACILITY_ID}-${categories.get(item.PHARMACY_CATGRY_ID)!.slug_value}`,
+        can_edit_charge_item: true,
         price_components: [
           {
-            monetary_component_type: MonetaryComponentType.base,
+            monetary_component_type: "base" as MonetaryComponentType,
             amount: item.LAST_SELLING_PRICE?.toString() || "0",
           },
         ],

@@ -3,7 +3,6 @@ import {
   ResourceCategoryResourceType,
   ResourceCategorySubType,
 } from "@/types/base/resourceCategory/resourceCategory";
-import { DOSAGE_UNITS_CODES } from "@/types/emr/medicationRequest/medicationRequest";
 import {
   ProductKnowledgeBase,
   ProductKnowledgeCreate,
@@ -13,6 +12,8 @@ import {
 } from "@/types/inventory/productKnowledge/productKnowledge";
 import { PaginatedResponse } from "@/Utils/request/types";
 import { createHash } from "crypto";
+import fs from "fs";
+import path from "path";
 import {
   createSlug,
   fetchCsvFromGoogleSheet,
@@ -22,6 +23,8 @@ import {
 } from "sudheendra-scripts/utils";
 
 const logger = getLogger();
+
+const FAILED_OUTPUT_FILE = "failed-product-knowledges.json";
 
 const getConfig = () => {
   const facilityIds = process.env.FACILITY_IDS?.split(",") || [];
@@ -49,11 +52,17 @@ const headerMap = {
   slug: 1,
   name: 2,
   productType: 3,
-  baseUnitDisplay: 5,
+  codeDisplay: 4,
+  codeValue: 5,
+  baseUnitDisplay: 6,
   // status: 4,
-  alternateIdentifier: 6,
-  alternateNameType: 8,
-  alternateNameValue: 9,
+  dosageFormDisplay: 7,
+  dosageFormCode: 8,
+  routeCode: 9,
+  routeDisplay: 10,
+  alternateIdentifier: null,
+  alternateNameType: null,
+  alternateNameValue: null,
 };
 
 const requiredHeaderKeys = [
@@ -62,6 +71,42 @@ const requiredHeaderKeys = [
   "productType",
   "baseUnitDisplay",
 ] satisfies (keyof typeof headerMap)[];
+
+const SNOMED_SYSTEM = "http://snomed.info/sct";
+
+const DOSAGE_UNITS_CODES = [
+  { system: "http://unitsofmeasure.org", code: "{tbl}", display: "tablets" },
+  {
+    system: "http://unitsofmeasure.org",
+    code: "{Capsule}",
+    display: "capsules",
+  },
+  { system: "http://unitsofmeasure.org", code: "mL", display: "milliliter" },
+  { system: "http://unitsofmeasure.org", code: "mg", display: "milligram" },
+  { system: "http://unitsofmeasure.org", code: "g", display: "gram" },
+  { system: "http://unitsofmeasure.org", code: "mcg", display: "microgram" },
+  { system: "http://unitsofmeasure.org", code: "L", display: "liter" },
+  {
+    system: "http://unitsofmeasure.org",
+    code: "IU",
+    display: "international unit",
+  },
+  { system: "http://unitsofmeasure.org", code: "{count}", display: "count" },
+  { system: "http://unitsofmeasure.org", code: "[drp]", display: "drop" },
+  {
+    system: "http://unitsofmeasure.org",
+    code: "mg/mL",
+    display: "milligram per milliliter",
+  },
+] as const;
+
+const parseCsvList = (value?: string) =>
+  value
+    ? value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    : [];
 
 export function createProductKnowledgeSlug(name: string) {
   // this will hash the name and return a slug unlike `createSlug`
@@ -75,6 +120,8 @@ async function main() {
     getValidatedDatapoint,
   );
 
+  const failedProducts: { name: string }[] = [];
+
   const resourceCategories = [
     ...new Set(datapoints.map((dp) => dp.resourceCategory)),
   ];
@@ -84,7 +131,13 @@ async function main() {
       `Upserting resource categories and product knowledges for facility ${facilityId}`,
     );
     await upsertResourceCategories(facilityId, resourceCategories);
-    await upsertProductKnowledges(facilityId, datapoints);
+    await upsertProductKnowledges(facilityId, datapoints, failedProducts);
+  }
+
+  if (failedProducts.length > 0) {
+    const outputPath = path.resolve(process.cwd(), FAILED_OUTPUT_FILE);
+    fs.writeFileSync(outputPath, JSON.stringify(failedProducts, null, 2));
+    logger(`Saved ${failedProducts.length} failures to ${FAILED_OUTPUT_FILE}`);
   }
 }
 
@@ -122,7 +175,7 @@ function getValidatedDatapoint(
 
   let alternateNameType: ProductNameTypes | undefined;
 
-  if (datapoint.alternateNameType) {
+  if (datapoint?.alternateNameType) {
     alternateNameType = [
       ProductNameTypes.trade_name,
       ProductNameTypes.alias,
@@ -130,7 +183,8 @@ function getValidatedDatapoint(
       ProductNameTypes.preferred,
     ].find(
       (type) =>
-        type === datapoint.alternateNameType.toLowerCase().replaceAll(" ", "_"),
+        type ===
+        datapoint?.alternateNameType.toLowerCase().replaceAll(" ", "_"),
     );
 
     if (!alternateNameType) {
@@ -140,12 +194,45 @@ function getValidatedDatapoint(
     }
   }
 
+  const dosageFormCode = datapoint.dosageFormCode?.trim();
+  const dosageFormDisplay = datapoint.dosageFormDisplay?.trim();
+
+  const routeCodes = parseCsvList(datapoint.routeCode);
+  const routeDisplays = parseCsvList(datapoint.routeDisplay);
+
+  const intendedRoutes = routeCodes.map((code, index) => ({
+    system: SNOMED_SYSTEM,
+    code,
+    display: routeDisplays[index] || routeDisplays[0] || code,
+  }));
+
+  const dosageForm = dosageFormCode
+    ? {
+        system: SNOMED_SYSTEM,
+        code: dosageFormCode,
+        display: dosageFormDisplay || dosageFormCode,
+      }
+    : undefined;
+
+  const codeValue = datapoint.codeValue?.trim();
+  const codeDisplay = datapoint.codeDisplay?.trim();
+  const code = codeValue
+    ? {
+        system: SNOMED_SYSTEM,
+        code: codeValue,
+        display: codeDisplay || codeValue,
+      }
+    : undefined;
+
   return {
     ...datapoint,
     baseUnit,
     slug,
     productType,
     alternateNameType,
+    dosageForm,
+    intendedRoutes,
+    code,
   };
 }
 
@@ -217,6 +304,7 @@ async function getExistingProductKnowledgeSlugs(facilityId: string) {
 async function upsertProductKnowledges(
   facilityId: string,
   datapoints: ReturnType<typeof getValidatedDatapoint>[],
+  failedProducts: { name: string }[],
 ) {
   logger(
     `Processing ${datapoints.length} product knowledges for facility ${facilityId}`,
@@ -249,7 +337,22 @@ async function upsertProductKnowledges(
       category: `f-${facilityId}-pk-${createSlug(datapoint.resourceCategory)}`,
       names: [],
       storage_guidelines: [],
+      is_instance_level: false,
     };
+
+    if (datapoint.code) {
+      productKnowledge.code = datapoint.code;
+    }
+
+    if (datapoint.dosageForm) {
+      productKnowledge.definitional = {
+        dosage_form: datapoint.dosageForm,
+        intended_routes: datapoint.intendedRoutes,
+        ingredients: [],
+        nutrients: [],
+        drug_characteristic: [],
+      };
+    }
 
     // Add alternate identifier if provided
     if (datapoint.alternateIdentifier) {
@@ -271,7 +374,8 @@ async function upsertProductKnowledges(
       logger(`Created product knowledge: ${datapoint.slug}`);
     } catch (error) {
       logger(`Error creating product knowledge: ${JSON.stringify(datapoint)}`);
-      throw error;
+      logger(`Error details: ${String(error)}`);
+      failedProducts.push({ name: datapoint.name });
     }
   }
 }

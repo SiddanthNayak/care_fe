@@ -3,11 +3,11 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { Code } from "@/types/base/code/code";
 import {
   BatchRequestBody,
   BatchRequestResponse,
 } from "@/types/base/batch/batch";
+import { Code } from "@/types/base/code/code";
 import {
   ResourceCategoryCreate,
   ResourceCategoryResourceType,
@@ -247,7 +247,7 @@ export const fetchCsvFromGoogleSheet = async (
  */
 export const transformCsvToObjects = <T extends string>(
   [headerRow, ...dataRows]: string[][],
-  headerMap: Record<T, string | number>,
+  headerMap: Record<T, string | number | null>,
   generateFns?: Partial<Record<T, () => string>>,
 ): Record<T, string>[] => {
   // Get the indexes of the headers
@@ -255,6 +255,10 @@ export const transformCsvToObjects = <T extends string>(
     keysOf(headerMap).map((rKey) => {
       if (typeof headerMap[rKey] === "number") {
         return [rKey, headerMap[rKey]];
+      }
+
+      if (headerMap[rKey] === null) {
+        return [rKey, () => ""];
       }
 
       if (generateFns?.[rKey]) {
@@ -1028,7 +1032,6 @@ export async function makeApiCall(
     config,
   );
 
-
   if (!response.ok) {
     const errorText = await response.json();
 
@@ -1289,7 +1292,8 @@ export function mapResultsToOutput<T extends { slug_value?: string }>(
 ): ProcessedRow[] {
   return outputRows.map((row) => {
     const result = results.find(
-      (r) => r.item[slugKey] === row[slugKey] || r.item.slug_value === row[slugKey],
+      (r) =>
+        r.item[slugKey] === row[slugKey] || r.item.slug_value === row[slugKey],
     );
     return {
       ...row,
@@ -1351,19 +1355,21 @@ export interface LoaderConfig<TProcessed> {
 export function createGenericLoader<TProcessed>(
   config: LoaderConfig<TProcessed>,
 ) {
-  return async (configOverride?: Partial<BaseConfig>): Promise<LoaderResult> => {
+  return async (
+    configOverride?: Partial<BaseConfig>,
+  ): Promise<LoaderResult> => {
     const logger = getLogger();
 
     // Step 1: Config initialization
     let finalConfig = configOverride
       ? createScriptConfig(
-        config.defaultInputFile,
-        config.defaultOutputFile,
-        configOverride,
-      )
+          config.defaultInputFile,
+          config.defaultOutputFile,
+          configOverride,
+        )
       : mergeConfigWithCli(
-        createScriptConfig(config.defaultInputFile, config.defaultOutputFile),
-      );
+          createScriptConfig(config.defaultInputFile, config.defaultOutputFile),
+        );
 
     try {
       logger(colorize(`Starting ${config.scriptName} loader...`, 0));
@@ -1419,8 +1425,8 @@ export function createGenericLoader<TProcessed>(
       logger(colorize(`Upserting ${config.scriptName}s...`, 0));
       const itemsForApi = config.transformForApiFn
         ? processedData.map((item) =>
-          config.transformForApiFn!(item, finalConfig),
-        )
+            config.transformForApiFn!(item, finalConfig),
+          )
         : processedData;
 
       const results = await makeBatchApiCall(
@@ -1639,8 +1645,9 @@ export async function createResourceCategories(
   }
   const categoryData: ResourceCategoryCreate[] = filteredCategories.map(
     (category) => {
-      const resourceSubType = resourceSubTypeMap?.get(category) || ResourceCategorySubType.other;
-      return ({
+      const resourceSubType =
+        resourceSubTypeMap?.get(category) || ResourceCategorySubType.other;
+      return {
         title: normalizeTitle(category),
         description: `Auto-generated category for ${category}`,
         resource_type: resourceType,
@@ -1648,8 +1655,8 @@ export async function createResourceCategories(
         slug_value: generateHashSlug(
           normalizeTitle(`${resourceTypePrefix}_${category}`),
         ),
-      })
-    }
+      };
+    },
   );
 
   // Use batch API call to create categories

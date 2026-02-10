@@ -182,6 +182,7 @@ async function upsertProductKnowledges(
       base_unit: datapoint.baseUnit,
       names: [],
       storage_guidelines: [],
+      is_instance_level: true,
     };
 
     // Add alternate identifier if provided

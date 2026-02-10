@@ -146,16 +146,16 @@ async function main(configOverride?: Partial<BaseConfig>) {
   // Otherwise, merge CLI args (called from command line)
   let finalConfig = configOverride
     ? createScriptConfig(
-      SCRIPT_DEFAULTS.inputFile,
-      SCRIPT_DEFAULTS.outputFile,
-      configOverride,
-    )
-    : mergeConfigWithCli(
-      createScriptConfig(
         SCRIPT_DEFAULTS.inputFile,
         SCRIPT_DEFAULTS.outputFile,
-      ),
-    );
+        configOverride,
+      )
+    : mergeConfigWithCli(
+        createScriptConfig(
+          SCRIPT_DEFAULTS.inputFile,
+          SCRIPT_DEFAULTS.outputFile,
+        ),
+      );
 
   if (finalConfig.skipInsert?.includes("cid")) {
     return mockInsert(finalConfig);
@@ -186,7 +186,11 @@ async function main(configOverride?: Partial<BaseConfig>) {
     });
     logger(colorize("Ensuring categories exist...", 0));
     const { successful, failed, categoryData } =
-      await ensureChargeItemCategories(categoriesList, finalConfig, resourceSubTypeMap);
+      await ensureChargeItemCategories(
+        categoriesList,
+        finalConfig,
+        resourceSubTypeMap,
+      );
     if (failed.length > 0) {
       logger(colorize("Failed to create categories:", 1));
       failed.forEach((category) => {
@@ -219,6 +223,7 @@ async function main(configOverride?: Partial<BaseConfig>) {
           slug_value: item.slug_value,
           status: item.status,
           description: item.description,
+          can_edit_charge_item: true,
           category: `f-${finalConfig.facilityId}-${generateHashSlug(normalizeTitle(`cid_${item.category}`))}`,
           price_components: [
             {

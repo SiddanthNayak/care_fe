@@ -102,6 +102,7 @@ async function buildProductKnowledges(
         names: [],
         storage_guidelines: [],
         base_unit: baseUnit,
+        is_instance_level: false,
         category:
           productType === ProductKnowledgeType.medication
             ? `f-${FACILITY_ID}-pk-medicines`

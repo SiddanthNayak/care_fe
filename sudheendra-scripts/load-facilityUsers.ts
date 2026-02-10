@@ -24,12 +24,17 @@ const getConfig = () => {
 };
 
 const headerMap = {
-  username: 0,
-  organizationId: 1,
-  roleId: 2,
+  username: 15,
+  organizationId: 14,
+  roleId: 12,
 };
 
 const logger = getLogger();
+
+const UUID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+
+const isUuid = (value: string) => UUID_PATTERN.test(value);
 
 async function linkFacilityUsers(
   datapoints: Record<keyof typeof headerMap, string>[],
@@ -38,13 +43,21 @@ async function linkFacilityUsers(
   const existingUsers = await getExistingUsers();
   for (const datapoint of datapoints) {
     const { username, organizationId, roleId } = datapoint;
+    const userId = isUuid(username)
+      ? username
+      : existingUsers.get(username)?.id;
+
+    if (!userId) {
+      logger(`Skipping: user not found for username '${username}'.`);
+      continue;
+    }
 
     try {
       await request(
         `/api/v1/facility/${facilityId}/organizations/${organizationId}/users/`,
         "POST",
         {
-          user: username,
+          user: userId,
           role: roleId,
         },
       );
@@ -53,13 +66,8 @@ async function linkFacilityUsers(
       );
     } catch (error: any) {
       if (error.message.includes("User association already exists")) {
-        const user = existingUsers.get(username);
-        if (!user) {
-          logger(`User ${username} not found`);
-          continue;
-        }
         await request(
-          `/api/v1/facility/${facilityId}/organizations/${organizationId}/users/${user.id}/`,
+          `/api/v1/facility/${facilityId}/organizations/${organizationId}/users/${userId}/`,
           "PUT",
           {
             role: roleId,

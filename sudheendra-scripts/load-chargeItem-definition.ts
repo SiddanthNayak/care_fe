@@ -1,4 +1,4 @@
-import { MonetaryComponentType } from "@/types/base/monetaryComponent/monetaryComponent";
+import type { MonetaryComponentType } from "@/types/base/monetaryComponent/monetaryComponent";
 import {
   ResourceCategoryRead,
   ResourceCategoryResourceType,
@@ -49,7 +49,9 @@ const getConfig = () => {
 
 const headerMap = {
   title: 0,
-  price: 1,
+  description: 1,
+  purpose: 2,
+  price: 3,
 };
 
 function createChargeItemDefinitionSlug(name: string) {
@@ -89,7 +91,7 @@ const creatChargeItemDefinition = async (
   console.log(`Found ${existingSlugs.length} existing charge item definitions`);
 
   for (const datapoint of datapoints) {
-    const { title, price } = datapoint;
+    const { title, price, description, purpose } = datapoint;
     const slug = createChargeItemDefinitionSlug(title);
 
     if (existingSlugs.includes(slug)) {
@@ -101,9 +103,12 @@ const creatChargeItemDefinition = async (
           slug_value: slug,
           status: ChargeItemDefinitionStatus.active,
           category: resourceCategorySlug,
+          description,
+          purpose,
+          can_edit_charge_item: true,
           price_components: [
             {
-              monetary_component_type: MonetaryComponentType.base,
+              monetary_component_type: "base" as MonetaryComponentType,
               amount: price,
             },
           ],
@@ -118,9 +123,12 @@ const creatChargeItemDefinition = async (
       slug_value: slug,
       status: ChargeItemDefinitionStatus.active,
       category: resourceCategorySlug,
+      description,
+      purpose,
+      can_edit_charge_item: true,
       price_components: [
         {
-          monetary_component_type: MonetaryComponentType.base,
+          monetary_component_type: "base" as MonetaryComponentType,
           amount: price,
         },
       ],
