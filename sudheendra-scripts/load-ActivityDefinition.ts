@@ -202,21 +202,21 @@ function createActivityDataFromRow(row: Record<string, string>): ActivityData {
     category: row.category || "laboratory",
     observations: row.observation_slugs
       ? row.observation_slugs
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter((s: string) => s)
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter((s: string) => s)
       : [],
     specimens: row.specimen_slugs
       ? row.specimen_slugs
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter((s: string) => s)
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter((s: string) => s)
       : [],
     chargeItems: row.charge_item_slugs
       ? row.charge_item_slugs
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter((s: string) => s)
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter((s: string) => s)
       : [],
     diagnostic_report_loinc_codes: [], //diagnosticReportCodes,
     code: finalCode,
@@ -224,9 +224,9 @@ function createActivityDataFromRow(row: Record<string, string>): ActivityData {
     derived_from_uri: row.derived_from_uri || undefined,
     locations: row.locations
       ? row.locations
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter((s: string) => s)
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter((s: string) => s)
       : [],
   };
 }
@@ -286,16 +286,16 @@ async function processCsvData(
 async function main(configOverride?: Partial<BaseConfig>) {
   let finalConfig = configOverride
     ? createScriptConfig(
-      SCRIPT_DEFAULTS.inputFile,
-      SCRIPT_DEFAULTS.outputFile,
-      configOverride,
-    )
-    : mergeConfigWithCli(
-      createScriptConfig(
         SCRIPT_DEFAULTS.inputFile,
         SCRIPT_DEFAULTS.outputFile,
-      ),
-    );
+        configOverride,
+      )
+    : mergeConfigWithCli(
+        createScriptConfig(
+          SCRIPT_DEFAULTS.inputFile,
+          SCRIPT_DEFAULTS.outputFile,
+        ),
+      );
 
   try {
     logger(colorize("Starting activity definition loader...", 0));

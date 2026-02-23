@@ -121,7 +121,7 @@ async function createDepartmentUsers(
         last_name: datapoint.lastName,
         gender: datapoint.gender,
         password: datapoint.password,
-        phone_number: datapoint.phoneNumber,
+        phone_number: `+91${datapoint.phoneNumber}`,
         geo_organization: datapoint.geoOrganization,
       });
       if (!newUser) {

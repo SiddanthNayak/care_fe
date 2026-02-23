@@ -5,11 +5,14 @@ import {
   ResourceCategorySubType,
 } from "@/types/base/resourceCategory/resourceCategory";
 import {
+  ChargeItemDefinitionBase,
   ChargeItemDefinitionCreate,
   ChargeItemDefinitionStatus,
 } from "@/types/billing/chargeItemDefinition/chargeItemDefinition";
 import { createHash } from "crypto";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 import {
   getExistingChargeItemDefinitionsByResourceCategorySlug,
   getExistingChargeItemDefinitionSlugs,
@@ -46,6 +49,8 @@ const getConfig = () => {
 
   return { facilityId, googleSheetId, sheetName, sheetTitle };
 };
+
+const OUTPUT_FILE = "charge-item-definition-slugs.json";
 
 const headerMap = {
   title: 0,
@@ -87,6 +92,7 @@ const creatChargeItemDefinition = async (
   datapoints: Record<keyof typeof headerMap, string>[],
 ) => {
   const existingSlugs = await getExistingChargeItemDefinitionSlugs();
+  const createdItems: { id: string; slug: string }[] = [];
 
   console.log(`Found ${existingSlugs.length} existing charge item definitions`);
 
@@ -95,7 +101,7 @@ const creatChargeItemDefinition = async (
     const slug = createChargeItemDefinitionSlug(title);
 
     if (existingSlugs.includes(slug)) {
-      const response = await request(
+      const response = await request<ChargeItemDefinitionBase>(
         `/api/v1/facility/${facilityId}/charge_item_definition/${slug}/`,
         "PUT",
         {
@@ -114,6 +120,7 @@ const creatChargeItemDefinition = async (
           ],
         } as ChargeItemDefinitionCreate,
       );
+      createdItems.push({ id: response.id, slug: response.slug });
       console.log(`Updated charge item definition: ${title}`);
       continue;
     }
@@ -134,13 +141,22 @@ const creatChargeItemDefinition = async (
       ],
     };
 
-    const response = await request(
+    const response = await request<ChargeItemDefinitionBase>(
       `/api/v1/facility/${facilityId}/charge_item_definition/`,
       "POST",
       chargeItemDefinition,
     );
+    createdItems.push({ id: response.id, slug: response.slug });
 
     console.log(`Created charge item definition: ${title}`);
+  }
+
+  if (createdItems.length > 0) {
+    const outputPath = path.resolve(process.cwd(), OUTPUT_FILE);
+    fs.writeFileSync(outputPath, JSON.stringify(createdItems, null, 2));
+    console.log(
+      `Saved ${createdItems.length} charge item slugs to ${OUTPUT_FILE}`,
+    );
   }
 };
 
