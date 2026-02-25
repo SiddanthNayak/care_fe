@@ -108,13 +108,13 @@ export function DiscountComponentSettings() {
         </div>
 
         <div className="rounded-md border overflow-hidden mt-4">
-          <Table>
+          <Table className="table-fixed w-full">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-20" />
-                <TableHead>{t("name")}</TableHead>
-                <TableHead>{t("discount_code")}</TableHead>
-                <TableHead>{t("value")}</TableHead>
+                <TableHead className="w-[40%]">{t("name")}</TableHead>
+                <TableHead className="w-[40%]">{t("discount_code")}</TableHead>
+                <TableHead className="w-24">{t("value")}</TableHead>
                 <TableHead className="w-24"></TableHead>
               </TableRow>
             </TableHeader>
@@ -138,17 +138,25 @@ export function DiscountComponentSettings() {
                       </Badge>
                     </TableCell>
                     <TableCell className="font-medium">
-                      <div className="flex items-center gap-2">
-                        {component.title}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className="text-sm truncate"
+                          title={component.title}
+                        >
+                          {component.title}
+                        </span>
                       </div>
                     </TableCell>
                     <TableCell>
                       {component.code && (
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
                           <code className="px-2 py-1 rounded bg-gray-100 text-sm">
                             {component.code.code}
                           </code>
-                          <span className="text-sm">
+                          <span
+                            className="text-sm truncate"
+                            title={component.code.display}
+                          >
                             • {component.code.display}
                           </span>
                         </div>
