@@ -3,10 +3,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Import other loaders
-import { main as loadChargeItems } from "./load-chargeItem.js";
-import { main as loadObservations } from "./load-observation_definition.js";
-import { main as loadSpecimens } from "./load-specimenDefinition.js";
+// Import other loaders lazily inside main to avoid loading dependencies when
+// skip-insert flags are used.
 import {
   type BaseConfig,
   type ProcessedRow,
@@ -15,6 +13,7 @@ import {
   createScriptConfig,
   ensureActivityDefinitionCategories,
   ensureAuthentication,
+  fetchCsvFromGoogleSheet,
   generateHashSlug,
   getAuthHeaders,
   getLogger,
@@ -28,17 +27,45 @@ import {
   processApiResults,
   removeDuplicates,
   showCliHelp,
+  transformCsvToObjects,
   validateRowCodes,
   writeOutputCsv,
 } from "./utils.js";
 
-import { Code } from "@/types/base/code/code";
-import {
-  ActivityDefinitionCreateSpec,
-  Classification,
-  Kind,
-  Status,
-} from "@/types/emr/activityDefinition/activityDefinition";
+type Status = "draft" | "active" | "retired" | "unknown";
+type Classification =
+  | "laboratory"
+  | "imaging"
+  | "surgical_procedure"
+  | "counselling";
+type Kind = "service_request";
+
+interface Code {
+  system: string;
+  code: string;
+  display: string;
+}
+
+interface ActivityDefinitionCreateSpec {
+  title: string;
+  slug_value: string;
+  description: string;
+  usage: string;
+  status: Status;
+  classification: Classification;
+  kind: Kind;
+  facility: string;
+  category: string;
+  specimen_requirements: string[];
+  charge_item_definitions: string[];
+  observation_result_requirements: string[];
+  locations: string[];
+  diagnostic_report_codes: Code[];
+  code: Code;
+  body_site: Code | null;
+  derived_from_uri: string | null;
+  healthcare_service: string | null;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.join(path.dirname(__filename), "inputs");
@@ -67,7 +94,25 @@ interface ActivityData {
   body_site?: Code;
   derived_from_uri?: string;
   locations?: string[];
+  healthcare_service?: string;
 }
+
+interface LoaderResult {
+  successful: unknown[];
+  failed?: unknown[];
+  results?: unknown[];
+}
+
+const extractSlugValue = (entry: unknown): string | null => {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+  const value = entry as {
+    slug_value?: string;
+    item?: { slug_value?: string };
+  };
+  return value.slug_value ?? value.item?.slug_value ?? null;
+};
 
 // Function to lookup missing codes using ValueSet API
 async function lookupCode(
@@ -127,6 +172,52 @@ const SCRIPT_DEFAULTS = {
   outputFile: path.join(__dirname, "output", "ActivityDefinitions-output.csv"),
   outputDir: path.join(__dirname, "output"),
 };
+
+const SHEET_HEADER_MAP = {
+  category: "category",
+  title: "title",
+  slug_value: "slug_value",
+  description: "description",
+  usage: "usage",
+  status: null,
+  classification: "classification",
+  code_value: "code_value",
+  code_display: "code_display",
+  code_system: "code_system",
+  diagnostic_report_loinc_codes: "diagnostic_report_codes",
+  diagnostic_report_display: "diagnostic_report_display",
+  diagnostic_report_system: "diagnostic_report_system",
+  specimen_slugs: "specimen_slugs",
+  observation_slugs: "observation_slugs",
+  charge_item_slugs: "charge_item_slugs",
+  healthcare_service: "healthcare_service",
+  locations: "locations",
+  body_site_system: null,
+  body_site_code: null,
+  body_site_display: null,
+  derived_from_uri: null,
+};
+
+async function loadActivityRows(
+  config: BaseConfig,
+): Promise<Record<string, string>[]> {
+  if (config.parser !== "google-sheets") {
+    return loadData(config);
+  }
+
+  if (!config.googleSheetId || !config.sheetName) {
+    throw new Error(
+      "Google Sheets parser requires googleSheetId and sheetName",
+    );
+  }
+
+  const csvData = await fetchCsvFromGoogleSheet(
+    config.googleSheetId,
+    config.sheetName,
+  );
+
+  return transformCsvToObjects(csvData, SHEET_HEADER_MAP);
+}
 
 // Validation rules for activity definition codes
 const ACTIVITY_VALIDATION_RULES: ValidationRule[] = [
@@ -195,10 +286,9 @@ function createActivityDataFromRow(row: Record<string, string>): ActivityData {
     slug_value: generateHashSlug(normalizeTitle(row.title)),
     description: row.description,
     usage: row.usage || "",
-    status: (row.status as Status) || Status.active,
-    classification:
-      (row.classification as Classification) || Classification.laboratory,
-    kind: Kind.service_request,
+    status: (row.status as Status) || "active",
+    classification: (row.classification as Classification) || "laboratory",
+    kind: "service_request",
     category: row.category || "laboratory",
     observations: row.observation_slugs
       ? row.observation_slugs
@@ -228,6 +318,7 @@ function createActivityDataFromRow(row: Record<string, string>): ActivityData {
           .map((s: string) => s.trim())
           .filter((s: string) => s)
       : [],
+    healthcare_service: row.healthcare_service?.trim() || undefined,
   };
 }
 
@@ -247,6 +338,10 @@ async function processCsvData(
   const results: ActivityData[] = [];
   for (const row of validatedRows) {
     try {
+      if (!row.title || !row.title.trim()) {
+        logger(colorize("Skipping row with empty title", 1));
+        continue;
+      }
       const activityData = createActivityDataFromRow(row);
       results.push(activityData);
     } catch (error: any) {
@@ -313,56 +408,69 @@ async function main(configOverride?: Partial<BaseConfig>) {
     // Step 1: Load dependencies first
     logger(colorize("\n=== Loading Dependencies ===", 0));
 
+    const skipChargeItems = finalConfig.skipInsert?.includes("cid") || false;
+    const skipSpecimens = finalConfig.skipInsert?.includes("sm") || false;
+    const skipObservations = finalConfig.skipInsert?.includes("obs") || false;
+
+    let chargeItemResults: LoaderResult = { successful: [] };
+    let specimenResults: LoaderResult = { successful: [] };
+    let observationResults: LoaderResult = { successful: [] };
+
     // Load charge items
-    if (finalConfig.skipInsert?.includes("cid")) {
+    if (skipChargeItems) {
       logger(colorize("Skipping charge item loading...", 1));
     } else {
       logger(colorize("Loading charge items...", 2));
+      const { main: loadChargeItems } = await import("./load-chargeItem.js");
+      chargeItemResults = await loadChargeItems({
+        ...authenticatedConfig,
+        inputFile: path.join(__dirname, "ChargeItemDefinition.csv"),
+        outputFile: path.join(outputDir, "ChargeItems-output.csv"),
+        facilityId: finalConfig.facilityId,
+        apiBaseUrl: finalConfig.apiBaseUrl,
+        parser: finalConfig.parser,
+        googleSheetId: finalConfig.googleSheetId,
+        sheetName: finalConfig.sheetName,
+      });
     }
-    const chargeItemResults = await loadChargeItems({
-      ...authenticatedConfig,
-      inputFile: path.join(__dirname, "ChargeItemDefinition.csv"),
-      outputFile: path.join(outputDir, "ChargeItems-output.csv"),
-      facilityId: finalConfig.facilityId,
-      apiBaseUrl: finalConfig.apiBaseUrl,
-      parser: finalConfig.parser,
-      googleSheetId: finalConfig.googleSheetId,
-      sheetName: finalConfig.sheetName,
-    });
 
     // Load specimens
-    if (finalConfig.skipInsert?.includes("sm")) {
+    if (skipSpecimens) {
       logger(colorize("Skipping specimen loading...", 1));
     } else {
       logger(colorize("Loading specimens...", 2));
+      const { main: loadSpecimens } =
+        await import("./load-specimenDefinition.js");
+      specimenResults = await loadSpecimens({
+        ...authenticatedConfig,
+        inputFile: path.join(__dirname, "SpecimenDefinition.csv"),
+        outputFile: path.join(outputDir, "Specimens-output.csv"),
+        facilityId: finalConfig.facilityId,
+        apiBaseUrl: finalConfig.apiBaseUrl,
+        parser: finalConfig.parser,
+        googleSheetId: finalConfig.googleSheetId,
+        sheetName: finalConfig.sheetName,
+      });
     }
-    const specimenResults = await loadSpecimens({
-      ...authenticatedConfig,
-      inputFile: path.join(__dirname, "SpecimenDefinition.csv"),
-      outputFile: path.join(outputDir, "Specimens-output.csv"),
-      facilityId: finalConfig.facilityId,
-      apiBaseUrl: finalConfig.apiBaseUrl,
-      parser: finalConfig.parser,
-      googleSheetId: finalConfig.googleSheetId,
-      sheetName: finalConfig.sheetName,
-    });
 
     // Load observations
-    if (finalConfig.skipInsert?.includes("obs")) {
+    if (skipObservations) {
       logger(colorize("Skipping observation loading...", 1));
     } else {
       logger(colorize("Loading observations...", 2));
+      const { main: loadObservations } =
+        await import("./load-observation_definition.js");
+      observationResults = await loadObservations({
+        ...authenticatedConfig,
+        inputFile: path.join(__dirname, "ObservationDefinition.csv"),
+        outputFile: path.join(outputDir, "Observations-output.csv"),
+        facilityId: finalConfig.facilityId,
+        apiBaseUrl: finalConfig.apiBaseUrl,
+        parser: finalConfig.parser,
+        googleSheetId: finalConfig.googleSheetId,
+        sheetName: finalConfig.sheetName,
+      });
     }
-    const observationResults = await loadObservations({
-      ...authenticatedConfig,
-      inputFile: path.join(__dirname, "ObservationDefinition.csv"),
-      outputFile: path.join(outputDir, "Observations-output.csv"),
-      facilityId: finalConfig.facilityId,
-      apiBaseUrl: finalConfig.apiBaseUrl,
-      parser: finalConfig.parser,
-      googleSheetId: finalConfig.googleSheetId,
-      sheetName: finalConfig.sheetName,
-    });
 
     // Step 2: Check if input file exists (only for local parser)
     if (
@@ -375,7 +483,7 @@ async function main(configOverride?: Partial<BaseConfig>) {
     // Step 3: Load activity definitions
     logger(colorize("\n=== Loading Activity Definitions ===", 0));
     logger(colorize("Loading data...", 0));
-    const csvRows = await loadData(finalConfig);
+    const csvRows = await loadActivityRows(finalConfig);
 
     if (csvRows.length === 0) {
       throw new Error("No valid rows found in CSV file");
@@ -429,16 +537,41 @@ async function main(configOverride?: Partial<BaseConfig>) {
     const invalidActivities: { item: ActivityData; error: string }[] = [];
     const activityWarnings: Map<string, string[]> = new Map();
 
+    const uniqueStrings = (values: string[]) =>
+      Array.from(new Set(values)).filter((value) => value);
+
+    const csvChargeItems = uniqueStrings(
+      uniqueProcessedData.flatMap((item) => item.chargeItems),
+    );
+    const csvSpecimens = uniqueStrings(
+      uniqueProcessedData.flatMap((item) => item.specimens),
+    );
+    const csvObservations = uniqueStrings(
+      uniqueProcessedData.flatMap((item) => item.observations),
+    );
+
     const availableSlugs = {
-      observations: observationResults.successful.map(
-        (obs: any) => obs.item.slug_value,
-      ),
-      specimens: specimenResults.successful.map(
-        (spec: any) => spec.item.slug_value,
-      ),
-      chargeItems: chargeItemResults.successful.map(
-        (ci: any) => ci.item.slug_value,
-      ),
+      observations: skipObservations
+        ? csvObservations
+        : uniqueStrings(
+            observationResults.successful
+              .map(extractSlugValue)
+              .filter((slug): slug is string => Boolean(slug)),
+          ),
+      specimens: skipSpecimens
+        ? csvSpecimens
+        : uniqueStrings(
+            specimenResults.successful
+              .map(extractSlugValue)
+              .filter((slug): slug is string => Boolean(slug)),
+          ),
+      chargeItems: skipChargeItems
+        ? csvChargeItems
+        : uniqueStrings(
+            chargeItemResults.successful
+              .map(extractSlugValue)
+              .filter((slug): slug is string => Boolean(slug)),
+          ),
       categories: categoryResults.successful,
     };
 
@@ -489,9 +622,7 @@ async function main(configOverride?: Partial<BaseConfig>) {
     const results = await makeBatchApiCall(
       `/api/v1/facility/${finalConfig.facilityId}/activity_definition/upsert/`,
       allActivities.map(
-        (
-          item,
-        ): ActivityDefinitionCreateSpec & { healthcare_service: null } => ({
+        (item): ActivityDefinitionCreateSpec => ({
           title: item.title,
           slug_value: item.slug_value,
           description: item.description,
@@ -516,7 +647,7 @@ async function main(configOverride?: Partial<BaseConfig>) {
           code: item.code!,
           body_site: item.body_site || null,
           derived_from_uri: item.derived_from_uri || null,
-          healthcare_service: null,
+          healthcare_service: item.healthcare_service || null,
         }),
       ),
       finalConfig,
