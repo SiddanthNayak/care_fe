@@ -14,13 +14,7 @@ import { PaginatedResponse } from "@/Utils/request/types";
 import { createHash } from "crypto";
 import fs from "fs";
 import path from "path";
-import {
-  createSlug,
-  fetchCsvFromGoogleSheet,
-  getLogger,
-  request,
-  transformCsvToObjects,
-} from "sudheendra-scripts/utils";
+import { createSlug, getLogger, request } from "sudheendra-scripts/utils";
 
 const logger = getLogger();
 
@@ -32,17 +26,18 @@ const getConfig = () => {
     throw new Error("FACILITY_IDS is not set");
   }
 
-  const googleSheetId = process.env.PRODUCT_KNOWLEDGE_GOOGLE_SHEET_ID!;
-  if (!googleSheetId) {
-    throw new Error("PRODUCT_KNOWLEDGE_GOOGLE_SHEET_ID is not set");
+  const localCsvPath = process.env.PRODUCT_KNOWLEDGE_CSV_PATH?.trim() || "";
+
+  const googleSheetId = process.env.PRODUCT_KNOWLEDGE_GOOGLE_SHEET_ID || "";
+  const sheetName = process.env.PRODUCT_KNOWLEDGE_SHEET_NAME || "";
+
+  if (!localCsvPath && (!googleSheetId || !sheetName)) {
+    throw new Error(
+      "Set PRODUCT_KNOWLEDGE_CSV_PATH for local CSV, or PRODUCT_KNOWLEDGE_GOOGLE_SHEET_ID and PRODUCT_KNOWLEDGE_SHEET_NAME for Google Sheets",
+    );
   }
 
-  const sheetName = process.env.PRODUCT_KNOWLEDGE_SHEET_NAME!;
-  if (!sheetName) {
-    throw new Error("PRODUCT_KNOWLEDGE_SHEET_NAME is not set");
-  }
-
-  return { facilityIds, googleSheetId, sheetName };
+  return { facilityIds, googleSheetId, sheetName, localCsvPath };
 };
 
 const headerMap = {
@@ -60,9 +55,9 @@ const headerMap = {
   dosageFormCode: 8,
   routeCode: 9,
   routeDisplay: 10,
-  alternateIdentifier: null,
-  alternateNameType: null,
-  alternateNameValue: null,
+  alternateIdentifier: 11,
+  alternateNameType: 12,
+  alternateNameValue: 13,
 };
 
 const requiredHeaderKeys = [
@@ -84,11 +79,11 @@ const DOSAGE_UNITS_CODES = [
   { system: "http://unitsofmeasure.org", code: "mL", display: "milliliter" },
   { system: "http://unitsofmeasure.org", code: "mg", display: "milligram" },
   { system: "http://unitsofmeasure.org", code: "g", display: "gram" },
-  { system: "http://unitsofmeasure.org", code: "mcg", display: "microgram" },
+  { system: "http://unitsofmeasure.org", code: "ug", display: "microgram" },
   { system: "http://unitsofmeasure.org", code: "L", display: "liter" },
   {
     system: "http://unitsofmeasure.org",
-    code: "IU",
+    code: "[iU]",
     display: "international unit",
   },
   { system: "http://unitsofmeasure.org", code: "{count}", display: "count" },
@@ -108,17 +103,101 @@ const parseCsvList = (value?: string) =>
         .filter(Boolean)
     : [];
 
+interface CsvParseResult {
+  headers: string[];
+  rows: string[][];
+}
+
+function parseCsvText(csvText: string): CsvParseResult {
+  const lines = csvText.split(/\r?\n/).filter((line) => line.trim().length > 0);
+
+  if (lines.length === 0) {
+    return { headers: [], rows: [] };
+  }
+
+  const headers = splitCsvLine(lines[0]);
+  const rows = lines.slice(1).map(splitCsvLine);
+  logger(
+    `Parsed CSV with ${headers.length} columns and ${rows.length} rows ${JSON.stringify(rows)}`,
+  );
+  return { headers, rows };
+}
+
+function splitCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      result.push(current.trim().replace(/^"(.*)"$/, "$1"));
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  result.push(current.trim().replace(/^"(.*)"$/, "$1"));
+  return result;
+}
+
+async function fetchCsvTextFromGoogleSheet(
+  googleSheetId: string,
+  sheetName: string,
+): Promise<string> {
+  const csvUrl = `https://docs.google.com/spreadsheets/d/${googleSheetId}/gviz/tq?tqx=out:csv&sheet=${sheetName}`;
+  const response = await fetch(csvUrl, { headers: { Accept: "text/csv" } });
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch CSV from Google Sheet: ${response.statusText}`,
+    );
+  }
+
+  return await response.text();
+}
+
 export function createProductKnowledgeSlug(name: string) {
   // this will hash the name and return a slug unlike `createSlug`
   return `${createSlug(name).slice(0, 20)}-${createHash("sha256").update(name).digest("hex").slice(0, 5)}`;
 }
 
 async function main() {
-  const { facilityIds, googleSheetId, sheetName } = getConfig();
-  const csvData = await fetchCsvFromGoogleSheet(googleSheetId, sheetName);
-  const datapoints = transformCsvToObjects(csvData, headerMap).map(
-    getValidatedDatapoint,
-  );
+  const { facilityIds, googleSheetId, sheetName, localCsvPath } = getConfig();
+  const csvText = localCsvPath
+    ? fs.readFileSync(path.resolve(localCsvPath), "utf-8")
+    : await fetchCsvTextFromGoogleSheet(googleSheetId, sheetName);
+  const { rows } = parseCsvText(csvText);
+  const datapoints = rows
+    .map((row) => {
+      const datapoint = (
+        Object.keys(headerMap) as Array<keyof typeof headerMap>
+      ).reduce(
+        (acc, key) => {
+          const idx = headerMap[key];
+          if (typeof idx === "number") {
+            acc[key] = row[idx] ?? "";
+          } else {
+            acc[key] = "";
+          }
+          return acc;
+        },
+        {} as Record<keyof typeof headerMap, string>,
+      );
+
+      return datapoint;
+    })
+    .map(getValidatedDatapoint);
 
   const failedProducts: { name: string }[] = [];
 
